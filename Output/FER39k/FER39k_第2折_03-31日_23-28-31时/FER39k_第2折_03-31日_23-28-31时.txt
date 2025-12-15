@@ -1,0 +1,2 @@
+working dir: /data/zjl/192-torch2/VideoX-master/X-CLIP/Output/
+Train: [0/300][0/15544]	eta 1 day, 1:37:55 lr 0.000000000	time 5.9364 (5.9364)	tot_loss 0.6706 (0.6706)	mem 4013MB

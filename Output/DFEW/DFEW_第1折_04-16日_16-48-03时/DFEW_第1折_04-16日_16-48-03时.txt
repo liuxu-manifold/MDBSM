@@ -1,0 +1,1 @@
+working dir: /data/zjl/192-torch2/VideoX-master/X-CLIP/Output/

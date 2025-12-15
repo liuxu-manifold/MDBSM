@@ -1,0 +1,52 @@
+# DATA 部分：用于配置与数据集相关的参数
+DATA:
+  # 数据集的根目录，所有数据文件都存放在此目录下
+  # 这里注释掉了之前可能使用的两个路径，当前使用的是 Erasing-Attention-Consistency 项目下的 Oulu 图像数据目录
+  # ROOT: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/data/videos/"
+  # ROOT: "/data/lql/zjl_86_torch/Erasing-Attention-Consistency-main/data/Oulu_image_add_lastframes/"
+  ROOT: "/data/lql/zjl_86_torch/Erasing-Attention-Consistency-main/data/Oulu_image_add_lastframes/"
+
+  # 训练数据文件列表的路径，记录了用于训练的样本信息
+  # 注释掉了多个不同项目下不同数据集的训练文件路径，当前使用的是 DFEW 数据集的训练文件
+  # TRAIN_FILE: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/data/train.txt"
+  # VAL_FILE: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/data/val.txt"
+  # TRAIN_FILE: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/data/Oulu-random/oulu-10-9/oulu-train-10-9.txt"
+  # VAL_FILE: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/data/Oulu-random/oulu-10-9/oulu-test-10-9.txt"
+  TRAIN_FILE: "/data/lql/zjl_86_torch/Erasing-Attention-Consistency-main/datalist/DFEW-txt/DFEW_set_1_train.txt"
+
+  # 验证数据文件列表的路径，记录了用于验证的样本信息
+  VAL_FILE: "/data/lql/zjl_86_torch/Erasing-Attention-Consistency-main/datalist/DFEW-txt/DFEW_set_1_test.txt"
+
+  # 所使用的数据集名称
+  DATASET: kinetics400
+
+  # 每个视频样本使用的帧数，在处理视频数据时，会从视频中选取 8 帧作为输入
+  NUM_FRAMES: 16
+
+  # 分类任务的类别数量，此任务共有 7 个类别，注释掉的 11 可能是之前或其他实验的设置
+  NUM_CLASSES: 7 #11
+
+  # 标签列表文件的路径，该文件记录了类别标签的详细信息
+  # 注释掉了不同项目下不同数据集的标签列表文件路径，当前使用的是 DFEW 数据集的标签文件
+  # LABEL_LIST: "/data/zjl/192-torch2/VideoX-master/X-CLIP/labels/MAFW_labels.csv"
+  LABEL_LIST: "/data1/liuxu/lx_190/MDBSM/labels/DFEW_labels.csv" #
+#
+#  LABEL_LIST: "/data1/liuxu/lx_190/MDBSM/labels/MAFW_labels.csv" #
+
+
+
+  # LABEL_LIST: "/data/lql/zjl_86_torch/VideoX-master/X-CLIP/labels/Oulu_labels.csv"
+
+# MODEL 部分：用于配置模型相关的参数
+MODEL:
+  # 所使用的模型架构，这里指定为 Vision Transformer Base 16 模型
+  ARCH: ViT-B/16
+
+# TRAIN 部分：用于配置训练过程相关的参数
+TRAIN:
+  # 训练时每个批次包含的样本数量，每次训练会同时处理 8 个样本
+  BATCH_SIZE: 8
+
+  # 梯度累积的步数，由于显存限制，通过梯度累积可以模拟更大的批次大小
+  # 每 4 次前向传播和反向传播后才更新一次模型参数
+  ACCUMULATION_STEPS: 4
