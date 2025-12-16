@@ -64,6 +64,13 @@ cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
 ```
 
+# Modal Dynamics–Based Stabilization (MDBSM)
+We add a modal-dynamics perspective to stabilize dynamic facial expression representations (see `models/xclip.py`, `models/mit.py`, `models/cct.py`, `models/prompt.py`):
+- **MDM**: Learn a dominant expression mode via a cross-attention query and softly distill each frame toward it, reducing identity/noise drift.
+- **BSM**: Detect “modal boiling” using deviation from the dominant mode plus entropy velocity/acceleration of frame predictions, then gate reflow that pulls unstable frames back toward the mode instead of dropping them.
+- **MSA**: Enforce spectral compactness on the stabilized trajectory by penalizing high-order covariance eigenvalues, keeping dynamics in a low-dimensional expression manifold.
+- **Loss**: Final loss = video-level cross-entropy + `lambda * L_spec`; integration is in `main.py`, and optimization covers MDBSM modules in `utils/optimizer.py`.
+
 # Data Preparation
 
 For downloading the Kinetics datasets, you can refer to [mmaction2](https://github.com/open-mmlab/mmaction2/blob/master/tools/data/kinetics/README.md) or [CVDF](https://github.com/cvdfoundation/kinetics-dataset). For [UCF-101](https://www.crcv.ucf.edu/data/UCF101.php) and [HMDB-51](https://serre-lab.clps.brown.edu/resource/hmdb-a-large-human-motion-database/), you can easily get them from the official website.

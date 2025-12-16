@@ -25,7 +25,7 @@ from sklearn.metrics import confusion_matrix
 # from models import xclip as x_load
 ###pycharm训练
 sys.path.append("/data1/liuxu/lx_190/MDBSM/models/")
-from xclip import load as x_load
+from mdbsm_xclip import load as x_load
 import datetime
 
 os.environ['MASTER_ADDR'] = 'localhost'
@@ -150,13 +150,7 @@ def main(config):
         criterion = LabelSmoothingCrossEntropy(smoothing=config.AUG.LABEL_SMOOTH)
     else:
         criterion = nn.CrossEntropyLoss()
-    # name_list = []
-    # param_list = []
-    # for name, param in model.named_parameters():
-    #     if 'fta_' in name:
-    #         name_list.append(name)
-    #         param_list.append(param)
-    #     print(name_list)
+
 
     optimizer = build_optimizer(config, model)
     lr_scheduler = build_scheduler(config, optimizer, len(train_loader))
@@ -330,8 +324,8 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         if texts.shape[0] == 1:
             texts = texts.view(1, -1)
 
-        output = model(images, texts)
-        total_loss = criterion(output, label_id)
+        output, spec_loss, _ = model(images, texts)
+        total_loss = criterion(output, label_id) + spec_loss
         total_loss = total_loss / config.TRAIN.ACCUMULATION_STEPS
 
 

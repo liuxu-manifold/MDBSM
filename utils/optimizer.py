@@ -55,7 +55,8 @@ def fix_text(model):
     #         param.requires_grad=False
 
     for name, param in model.named_parameters():
-        if "_Adapter" in name or "mit" in name or "prompts" in name or "fta" in name or "message_" in name or "mamba_" in name:
+        # 保留视觉适配器、MIT、提示、MDBSM等可训练，其余文本相关参数冻结
+        if any(k in name for k in ["_Adapter", "mit", "prompts", "fta", "message_", "mamba_", "mdm", "bsm", "msa"]):
             continue
         else:
             param.requires_grad = False
