@@ -56,7 +56,7 @@ def fix_text(model):
 
     for name, param in model.named_parameters():
         # 保留视觉适配器、MIT、提示、MDBSM等可训练，其余文本相关参数冻结
-        if any(k in name for k in ["_Adapter", "mit", "prompts", "fta", "message_", "mamba_", "mdm", "bsm", "msa"]):
+        if any(k in name for k in ["_Adapter", "prm_adapter", "mit", "prompts", "fta", "message_", "mamba_", "mdm", "bsm", "msa"]):
             continue
         else:
             param.requires_grad = False
@@ -78,7 +78,7 @@ def build_optimizer(config, model):
         skip_keywords = model.no_weight_decay_keywords()
     clip_parameters = set_weight_decay(model, skip, skip_keywords,
                                        weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR,
-                                       have=(), not_have=("mit", "prompts", "message_", "st_", "Adapter", "mamba_")
+                                       have=(), not_have=("mit", "prompts", "message_", "st_", "Adapter", "mamba_", "prm_adapter")
                                        )
     msg_parameters = set_weight_decay(model, skip, skip_keywords,
                                       weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
@@ -102,8 +102,12 @@ def build_optimizer(config, model):
                                       )
 
     mamba_parameters = set_weight_decay(model, skip, skip_keywords,
+                                        weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
+                                        have=("mamba_",), not_have=()
+                                        )
+    prm_parameters = set_weight_decay(model, skip, skip_keywords,
                                       weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
-                                      have=("mamba_",), not_have=()
+                                      have=("prm_adapter",), not_have=()
                                       )
     # fta_parameters = set_weight_decay(model, skip, skip_keywords,
     #     weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR*10,
@@ -111,7 +115,7 @@ def build_optimizer(config, model):
     # )
 
     optimizer = optim.AdamW(
-        clip_parameters + mit_parameters + msg_parameters + st_parameters + prompts_parameters + adp_parameters + mamba_parameters,
+        clip_parameters + mit_parameters + msg_parameters + st_parameters + prompts_parameters + adp_parameters + mamba_parameters + prm_parameters,
         betas=(0.9, 0.98), eps=1e-8, )
 
     return optimizer

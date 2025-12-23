@@ -8,6 +8,7 @@ import datetime
 import shutil
 import sys
 from pathlib import Path
+import torch.nn.functional as F
 # from utils.config import get_config
 from utils.optimizer import build_optimizer, build_scheduler
 from utils.tools import AverageMeter, reduce_tensor, epoch_saving, load_checkpoint, generate_text, auto_resume_helper
@@ -25,7 +26,7 @@ from sklearn.metrics import confusion_matrix
 # from models import xclip as x_load
 ###pycharm训练
 sys.path.append("/data1/liuxu/lx_190/MDBSM/models/")
-from mdbsm_xclip import load as x_load
+from xclip_prm import load as x_load
 import datetime
 
 os.environ['MASTER_ADDR'] = 'localhost'
@@ -70,12 +71,12 @@ def parse_option():
     parser.add_argument("--fold_id", type=int, default=0, help='local rank for DistributedDataParallel')
     args = parser.parse_args()
 
-    os.environ['MASTER_PORT'] = '12224'
+    os.environ['MASTER_PORT'] = '12221'
     flg = 1
     print("use own frame:", bool(flg))
-    args.local_rank = 4
+    args.local_rank = 1
     args.batch_size = 8
-    flod_id = 4
+    flod_id = 1
     args.flod_id = flod_id
 
     ####MAFW
@@ -150,7 +151,13 @@ def main(config):
         criterion = LabelSmoothingCrossEntropy(smoothing=config.AUG.LABEL_SMOOTH)
     else:
         criterion = nn.CrossEntropyLoss()
-
+    # name_list = []
+    # param_list = []
+    # for name, param in model.named_parameters():
+    #     if 'fta_' in name:
+    #         name_list.append(name)
+    #         param_list.append(param)
+    #     print(name_list)
 
     optimizer = build_optimizer(config, model)
     lr_scheduler = build_scheduler(config, optimizer, len(train_loader))
@@ -324,9 +331,21 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         if texts.shape[0] == 1:
             texts = texts.view(1, -1)
 
-        output, spec_loss, _ = model(images, texts)
-        total_loss = criterion(output, label_id) + spec_loss
-        total_loss = total_loss / config.TRAIN.ACCUMULATION_STEPS
+        video_logits, frame_logits, q, beta = model(images, texts)
+
+        # classification loss on video-level logits
+        total_loss = criterion(video_logits, label_id)
+
+        # phase-weighted consistency loss
+        with torch.no_grad():
+            teacher = F.softmax(video_logits.detach(), dim=-1)  # [B, C]
+        log_p_frame = F.log_softmax(frame_logits, dim=-1)        # [B, T, C]
+        teacher_expand = teacher.unsqueeze(1).expand_as(log_p_frame)
+        kl_frame = F.kl_div(log_p_frame, teacher_expand, reduction='none').sum(dim=-1)  # [B, T]
+        cons_loss = (q * kl_frame).sum(dim=1).mean()
+
+        cons_weight = getattr(config.MODEL, "CONS_WEIGHT", 1.0)
+        total_loss = (total_loss + cons_weight * cons_loss) / config.TRAIN.ACCUMULATION_STEPS
 
 
         if config.TRAIN.ACCUMULATION_STEPS == 1:
@@ -404,10 +423,9 @@ def validate(val_loader, text_labels, model, config):
                 if config.TRAIN.OPT_LEVEL == 'O2':
                     image_input = image_input.half()
 
-                # output , output2 = model(image_input, text_inputs)
-                # output = model(image_input, text_inputs)
-                output, _, _ = model(image_input, text_inputs)
-                similarity = output.view(b, -1).softmax(dim=-1)
+                # model now returns (video_logits, frame_logits, q, beta); use video logits for eval
+                video_logits, _, _, _ = model(image_input, text_inputs)
+                similarity = video_logits.view(b, -1).softmax(dim=-1)
                 tot_similarity += similarity
 
 

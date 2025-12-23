@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint_sequential
 import sys
+from prm_adapter import PRMAdapter
 sys.path.append("../")
 from clip.model import LayerNorm, QuickGELU, DropPath
 
@@ -62,6 +63,7 @@ class CrossFramelAttentionBlock(nn.Module):
         self.MLP_Adapter = Adapter(d_model, skip_connect=False)
         self.S_Adapter = Adapter(d_model)
         self.scale = 0.5
+        self.prm_adapter = PRMAdapter(dim=d_model, inner_dim=d_model//4, tau=1.0)
         # self.T_Adapter = Adapter(d_model, skip_connect=False)
         drop_path = 0.0
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -99,32 +101,35 @@ class CrossFramelAttentionBlock(nn.Module):
 
     def forward(self, x):
         l, bt, d = x.size()
-        b = bt // self.T
-        x = x.view(l, b, self.T, d)
+        # b = bt // self.T
+        # x = x.view(l, b, self.T, d)
 
-        msg_token = self.message_fc(x[0,:,:,:])
+        # msg_token = self.message_fc(x[0,:,:,:])
 
-        # msg_token, _ = self.message_lstm(msg_token)
-        # msg_token = self.message_proj(msg_token)
-        msg_token = msg_token.view(b, self.T, 1, d)
-        # #
-        msg_token = msg_token.permute(1,2,0,3).view(self.T, b, d)
-        msg_token = msg_token + self.drop_path(self.message_attn(self.message_ln(msg_token),self.message_ln(msg_token),self.message_ln(msg_token),need_weights=False)[0])
-        msg_token = msg_token.view(self.T, 1, b, d).permute(1,2,0,3)
+        # # msg_token, _ = self.message_lstm(msg_token)
+        # # msg_token = self.message_proj(msg_token)
+        # msg_token = msg_token.view(b, self.T, 1, d)
+        # # #
+        # msg_token = msg_token.permute(1,2,0,3).view(self.T, b, d)
+        # msg_token = msg_token + self.drop_path(self.message_attn(self.message_ln(msg_token),self.message_ln(msg_token),self.message_ln(msg_token),need_weights=False)[0])
+        # msg_token = msg_token.view(self.T, 1, b, d).permute(1,2,0,3)
 
-        x = torch.cat([x, msg_token], dim=0)
-        # #
-        x = x.view(l+1, -1, d)
-        # x = x + self.drop_path(self.attention(self.ln_1(x)))
+        # x = torch.cat([x, msg_token], dim=0)
+        # # #
+        # x = x.view(l+1, -1, d)
+        # # x = x + self.drop_path(self.attention(self.ln_1(x)))
+        # # x = x[:l,:,:]
+        # # x = x.view(l, -1, d)
+        # # x = x + self.drop_path(self.attention(self.ln_1(x)))
+        # x = x + self.S_Adapter(self.attention(self.ln_1(x)))
         # x = x[:l,:,:]
-        # x = x.view(l, -1, d)
-        # x = x + self.drop_path(self.attention(self.ln_1(x)))
-        x = x + self.S_Adapter(self.attention(self.ln_1(x)))
-        x = x[:l,:,:]
+   
+        residual, r, beta = self.prm_adapter(self.attention(self.ln_1(x)), B=bt//self.T, T=self.T, hw=(int((l)**0.5), int((l)**0.5)))
+        x = x + residual
         x = x + self.drop_path(self.mlp(self.ln_2(x)))
         # xn = self.ln_2(x)
         # x = x + self.mlp(xn) + self.drop_path(self.scale * self.MLP_Adapter(xn))
-        return x
+        return x, beta
 
 
 class Transformer(nn.Module):
@@ -136,13 +141,14 @@ class Transformer(nn.Module):
         self.width = width
         self.layers = layers
 
-        self.resblocks = nn.Sequential(*[CrossFramelAttentionBlock(width, heads, attn_mask, droppath[i], T) for i in range(layers)])
+        # need ModuleList because blocks return tuple (x, beta)
+        self.resblocks = nn.ModuleList([CrossFramelAttentionBlock(width, heads, attn_mask, droppath[i], T) for i in range(layers)])
 
     def forward(self, x: torch.Tensor):
-        if not self.use_checkpoint:
-            return self.resblocks(x)
-        else:
-            return checkpoint_sequential(self.resblocks, 3, x)
+        beta = None
+        for blk in self.resblocks:
+            x, beta = blk(x)
+        return x, beta
 
 
 class CrossFrameCommunicationTransformer(nn.Module):
@@ -187,7 +193,7 @@ class CrossFrameCommunicationTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)
-        x = self.transformer(x)
+        x, beta = self.transformer(x)
         x = x.permute(1, 0, 2)
 
         cls_x = self.ln_post(x[:, 0, :])
@@ -195,4 +201,4 @@ class CrossFrameCommunicationTransformer(nn.Module):
         if self.proj is not None:
             cls_x = cls_x @ self.proj
 
-        return cls_x, x[:,1:,:]
+        return cls_x, x[:,1:,:], beta

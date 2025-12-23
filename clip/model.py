@@ -111,8 +111,9 @@ class ResidualAttentionBlock(nn.Module):
     #     x = x + self.mlp(self.ln_2(x))
     #     return x
     def forward(self, x: torch.Tensor):
-        x = x + self.attention(self.ln_1(x))
-        # x = x + self.S_Adapter(self.attention(self.ln_1(x)))
+        attn_out = self.attention(self.ln_1(x))
+        # attn_out = self.S_Adapter(attn_out)
+        # x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
         # xn = self.ln_2(x)
         # x = x + self.mlp(xn) + self.drop_path(self.scale * self.MLP_Adapter(xn))
@@ -275,4 +276,3 @@ class CLIP(nn.Module):
 
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
-
