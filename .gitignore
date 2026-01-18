@@ -1,0 +1,25 @@
+# Local experiments / outputs
+Output/
+
+# Third-party subrepo / vendor
+VideoMamba-main/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pkl
+*.pth
+*.pt
+*.ckpt
+
+# Logs / metrics
+*.log
+*.csv
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

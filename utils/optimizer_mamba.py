@@ -55,7 +55,8 @@ def fix_text(model):
     #         param.requires_grad=False
 
     for name, param in model.named_parameters():
-        if "_Adapter" in name or "mit" in name or "prompts" in name or "fta" in name or "st_" in name or "_MV" in name or "message_" in name or "mamba_" in name:
+        if any(k in name for k in ["_Adapter", "prm_adapter", "mcp_adapter", "temporal_reliability",
+                                   "mit", "prompts", "fta", "st_", "_MV", "message_", "mamba_"]):
             continue
         else:
             param.requires_grad = False
@@ -77,7 +78,9 @@ def build_optimizer(config, model):
         skip_keywords = model.no_weight_decay_keywords()
     clip_parameters = set_weight_decay(model, skip, skip_keywords,
                                        weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR,
-                                       have=(), not_have=("mit", "prompts", "message_", "st_", "Adapter", "mamba_")
+                                       have=(), not_have=("mit", "prompts", "message_", "st_", "Adapter",
+                                                          "mamba_", "prm_adapter", "mcp_adapter",
+                                                          "temporal_reliability")
                                        )
     msg_parameters = set_weight_decay(model, skip, skip_keywords,
                                       weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
@@ -101,16 +104,25 @@ def build_optimizer(config, model):
                                       )
 
     mamba_parameters = set_weight_decay(model, skip, skip_keywords,
+                                        weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
+                                        have=("mamba_",), not_have=()
+                                        )
+    prm_parameters = set_weight_decay(model, skip, skip_keywords,
                                       weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR * 10,
-                                      have=("mamba_",), not_have=()
+                                      have=("prm_adapter", "mcp_adapter"), not_have=()
                                       )
+    temporal_parameters = set_weight_decay(model, skip, skip_keywords,
+                                           weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR,
+                                           have=("temporal_reliability",), not_have=()
+                                           )
     # fta_parameters = set_weight_decay(model, skip, skip_keywords,
     #     weight_decay=config.TRAIN.WEIGHT_DECAY, lr=config.TRAIN.LR*10,
     #     have=("fta",), not_have=()
     # )
 
     optimizer = optim.AdamW(
-        clip_parameters + mit_parameters + msg_parameters + st_parameters + prompts_parameters + adp_parameters + mamba_parameters,
+        clip_parameters + mit_parameters + msg_parameters + st_parameters + prompts_parameters + adp_parameters
+        + mamba_parameters + prm_parameters + temporal_parameters,
         betas=(0.9, 0.98), eps=1e-8, )
 
     return optimizer

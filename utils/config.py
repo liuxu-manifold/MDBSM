@@ -32,6 +32,11 @@ _C.MODEL.DROP_PATH_RATE = 0.
 _C.MODEL.PRETRAINED = None
 _C.MODEL.RESUME = None
 _C.MODEL.FIX_TEXT = True
+_C.MODEL.REL_WARMUP_EPOCHS = 0
+_C.MODEL.REL_TAU_START = 1.0
+_C.MODEL.REL_TAU_END = 1.0
+_C.MODEL.REL_GAMMA_START = 1.0
+_C.MODEL.REL_GAMMA_END = 1.0
 
 # -----------------------------------------------------------------------------
 # Training settings
@@ -49,6 +54,7 @@ _C.TRAIN.OPTIMIZER = 'adamw'
 _C.TRAIN.OPT_LEVEL = 'O0'
 _C.TRAIN.AUTO_RESUME = False
 _C.TRAIN.USE_CHECKPOINT = False
+_C.TRAIN.CLIP_GRAD = 0.0
 
 # -----------------------------------------------------------------------------
 # Augmentation settings

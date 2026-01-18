@@ -51,11 +51,12 @@ class MultiframeIntegrationTransformer(nn.Module):
             nn.init.zeros_(m.bias)
             nn.init.ones_(m.weight)
 
-    def forward(self, x: torch.Tensor, weights: torch.Tensor = None):
+    def forward(self, x: torch.Tensor, weights: torch.Tensor = None, return_sequence: bool = False):
         """
         Args:
             x: [B, T, D] frame-level features
             weights: optional [B, T] reliability weights for gating and pooling
+            return_sequence: if True, return the refined sequence [B, T, D]
         Returns:
             video feature: [B, D]
         """
@@ -68,6 +69,8 @@ class MultiframeIntegrationTransformer(nn.Module):
         x = x.permute(1, 0, 2)
         x = x.type(ori_x.dtype) + ori_x
 
+        if return_sequence:
+            return x
         if weights is not None:
             norm_w = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
             return (norm_w.unsqueeze(-1) * x).sum(dim=1)

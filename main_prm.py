@@ -8,7 +8,6 @@ import datetime
 import shutil
 import sys
 from pathlib import Path
-import torch.nn.functional as F
 # from utils.config import get_config
 from utils.optimizer import build_optimizer, build_scheduler
 from utils.tools import AverageMeter, reduce_tensor, epoch_saving, load_checkpoint, generate_text, auto_resume_helper
@@ -43,6 +42,26 @@ os.environ['WORLD_SIZE'] = '1'
 #     dist.init_process_group(backend='nccl', init_method='env://', rank = 0, world_size = 1)
 # dist.init_process_group(backend='nccl')
 import matplotlib.pyplot as plt
+
+
+def update_reliability_schedule(model, epoch, config):
+    warmup_epochs = getattr(config.MODEL, "REL_WARMUP_EPOCHS", 0)
+    tau_start = getattr(config.MODEL, "REL_TAU_START", None)
+    tau_end = getattr(config.MODEL, "REL_TAU_END", None)
+    gamma_start = getattr(config.MODEL, "REL_GAMMA_START", None)
+    gamma_end = getattr(config.MODEL, "REL_GAMMA_END", None)
+
+    # enable warmup: use uniform q during early epochs
+    model_ref = model.module if hasattr(model, "module") else model
+    model_ref.set_reliability_warmup(epoch < warmup_epochs)
+
+    rel = model_ref.visual.temporal_reliability
+    if tau_start is not None and tau_end is not None:
+        t = min(max(epoch / max(config.TRAIN.EPOCHS - 1, 1), 0.0), 1.0)
+        rel.tau = float(tau_start + (tau_end - tau_start) * t)
+    if gamma_start is not None and gamma_end is not None:
+        t = min(max(epoch / max(config.TRAIN.EPOCHS - 1, 1), 0.0), 1.0)
+        rel.gamma = float(gamma_start + (gamma_end - gamma_start) * t)
 
 
 def parse_option():
@@ -203,6 +222,7 @@ def main(config):
     current_UAR = 0.0
     best_UAR = 0.0
     for epoch in range(start_epoch, config.TRAIN.EPOCHS):
+        update_reliability_schedule(model, epoch, config)
         train_loader.sampler.set_epoch(epoch)
         train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_loader, text_labels, config, mixup_fn)
 
@@ -331,21 +351,12 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         if texts.shape[0] == 1:
             texts = texts.view(1, -1)
 
-        video_logits, frame_logits, q, beta = model(images, texts)
+        video_logits, _, q, beta = model(images, texts)
 
         # classification loss on video-level logits
         total_loss = criterion(video_logits, label_id)
 
-        # phase-weighted consistency loss
-        with torch.no_grad():
-            teacher = F.softmax(video_logits.detach(), dim=-1)  # [B, C]
-        log_p_frame = F.log_softmax(frame_logits, dim=-1)        # [B, T, C]
-        teacher_expand = teacher.unsqueeze(1).expand_as(log_p_frame)
-        kl_frame = F.kl_div(log_p_frame, teacher_expand, reduction='none').sum(dim=-1)  # [B, T]
-        cons_loss = (q * kl_frame).sum(dim=1).mean()
-
-        cons_weight = getattr(config.MODEL, "CONS_WEIGHT", 1.0)
-        total_loss = (total_loss + cons_weight * cons_loss) / config.TRAIN.ACCUMULATION_STEPS
+        total_loss = total_loss / config.TRAIN.ACCUMULATION_STEPS
 
 
         if config.TRAIN.ACCUMULATION_STEPS == 1:
@@ -357,10 +368,22 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
             total_loss.backward()
         if config.TRAIN.ACCUMULATION_STEPS > 1:
             if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
+                max_norm = getattr(config.TRAIN, "CLIP_GRAD", 0.0)
+                if max_norm and max_norm > 0:
+                    if config.TRAIN.OPT_LEVEL != 'O0':
+                        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), max_norm)
+                    else:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 optimizer.step()
                 optimizer.zero_grad()
                 lr_scheduler.step_update(epoch * num_steps + idx)
         else:
+            max_norm = getattr(config.TRAIN, "CLIP_GRAD", 0.0)
+            if max_norm and max_norm > 0:
+                if config.TRAIN.OPT_LEVEL != 'O0':
+                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), max_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
             optimizer.step()
             lr_scheduler.step_update(epoch * num_steps + idx)
 
@@ -371,6 +394,23 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         end = time.time()
 
         if idx % config.PRINT_FREQ == 0:
+            # 记录 beta/q 统计量，便于训练后绘图分析
+            if beta is not None and q is not None and dist.get_rank() == 0:
+                stats_path = os.path.join(config.OUTPUT, "beta_q_stats.csv")
+                if not os.path.exists(stats_path):
+                    with open(stats_path, "w") as f:
+                        f.write("epoch,step,beta_mean,beta_std,beta_min,beta_max,q_mean,q_std,q_min,q_max\n")
+                with torch.no_grad():
+                    b = beta.detach().float()
+                    qv = q.detach().float()
+                    row = [
+                        epoch, idx,
+                        b.mean().item(), b.std().item(), b.min().item(), b.max().item(),
+                        qv.mean().item(), qv.std().item(), qv.min().item(), qv.max().item(),
+                    ]
+                with open(stats_path, "a") as f:
+                    f.write(",".join([f"{x}" for x in row]) + "\n")
+
             lr = optimizer.param_groups[0]['lr']
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             etas = batch_time.avg * (num_steps - idx)

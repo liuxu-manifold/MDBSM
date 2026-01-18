@@ -26,29 +26,25 @@ class MonaOp(nn.Module):
         return x
 
 
-class PRMAdapter(nn.Module):
-    """
-    Phase-aware Reliability Modulation (PRM) Adapter for DFER.
 
-    Args:
-        dim: token embedding dim D
-        inner_dim: hidden dim for Mona path
-        tau: temperature for reliability gate
+class MCPAdapter(nn.Module):
     """
-    def __init__(self, dim: int, inner_dim: int, tau: float = 1.0):
+    Multi-Cognitive Perceptual (MCP) adapter for spatial enhancement.
+    Works on per-frame patch tokens with a lightweight temporal branch.
+    Expects patch tokens only (no CLS).
+    """
+    def __init__(self, dim: int, inner_dim: int):
         super().__init__()
         self.dim = dim
         self.inner_dim = inner_dim
-        self.tau = float(tau)
 
         self.ln = nn.LayerNorm(dim)
-        self.gamma = nn.Parameter(torch.ones(dim) * 1e-6)
-        self.gammax = nn.Parameter(torch.ones(dim))
-
         self.proj_in = nn.Linear(dim, inner_dim)
         self.mona = MonaOp(inner_dim)
         self.proj_out = nn.Linear(inner_dim, dim)
-
+        # 1x1 卷积分支用于时间建模（按 token 的时间序列）。
+        self.temporal_conv = nn.Conv1d(dim, dim, kernel_size=1, bias=False)
+        self.temporal_proj = nn.Linear(dim, dim)
         self.alpha = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, u: torch.Tensor, B: int, T: int, hw: Tuple[int, int]):
@@ -59,13 +55,9 @@ class PRMAdapter(nn.Module):
             T: temporal length
             hw: (H, W) spatial resolution of patch tokens
         Returns:
-            residual: gated residual to add to x, same shape as u
-            r: frame-wise variation r_t, [B, T]
-            beta: reliability gate beta_t, [B, T]
+            residual: spatial residual to add to u, same shape as u
         """
         H, W = hw
-
-        # Normalize to [B*T, L, D]
         transposed = False
         if u.dim() != 3:
             raise ValueError(f"u must be 3D, got {u.shape}")
@@ -80,39 +72,36 @@ class PRMAdapter(nn.Module):
         BT, L, D = u_btld.shape
         if BT != B * T:
             raise ValueError(f"BT mismatch: {BT} vs {B*T}")
-        if L != 1 + H * W:
-            raise ValueError(f"L should be 1+H*W, got L={L}, H*W={H*W}")
+        if L != H * W:
+            raise ValueError(f"L should be H*W, got L={L}, H*W={H*W}")
         if D != self.dim:
             raise ValueError(f"Channel dim mismatch: {D} vs {self.dim}")
 
-        # Calibration with scaled LN
-        u_cal = self.ln(u_btld) * self.gamma + u_btld * self.gammax  # [B*T, L, D]
-
-        # Temporal variation from CLS token
-        cls = u_cal[:, 0, :]              # [B*T, D]
-        cls = cls.view(B, T, D)           # [B, T, D]
-        r_delta = cls[:, 1:] - cls[:, :-1]  # [B, T-1, D]
-        r = torch.norm(r_delta, dim=-1)      # [B, T-1]
-        r = F.pad(r, (1, 0), value=0.0)      # [B, T], first frame variation set to 0
-
-        beta = torch.exp(-r / max(self.tau, 1e-6)).clamp(min=0.0, max=1.0)  # [B, T]
-        beta_bt = beta.view(BT, 1, 1)                                       # [B*T,1,1]
-
-        # Mona residual on patches (skip CLS)
-        z = self.proj_in(u_cal)                              # [B*T, L, C]
-        z_cls = z[:, :1, :]                                  # [B*T,1,C]
-        z_patch = z[:, 1:, :]                                # [B*T,H*W,C]
-
-        z_patch_2d = z_patch.view(BT, H, W, -1).permute(0, 3, 1, 2)  # [B*T,C,H,W]
-        z_patch_2d = self.mona(z_patch_2d)                          # [B*T,C,H,W]
+        # 逐帧空间增强，不引入跨帧注意力。
+        u_cal = self.ln(u_btld)
+        z = self.proj_in(u_cal)
+        z_patch = z
+        z_patch_2d = z_patch.view(BT, H, W, -1).permute(0, 3, 1, 2)
+        # 多尺度深度可分离卷积聚合空间线索。
+        z_patch_2d = self.mona(z_patch_2d)
         z_patch = z_patch_2d.permute(0, 2, 3, 1).contiguous().view(BT, H * W, -1)
+        delta_spatial = self.proj_out(z_patch)
 
-        z = torch.cat([torch.zeros_like(z_cls), z_patch], dim=1)     # CLS kept zeroed
-        delta_feat = self.proj_out(z)                                # [B*T, L, D]
+        # 时间建模分支：对 patch tokens 的时间序列做 1x1 卷积。
+        u_time = u_cal.view(B, T, L, D)
+        u_time_patch = u_time                                                # [B,T,L,D]
+        u_time_patch = u_time_patch.permute(0, 2, 1, 3).contiguous()         # [B,L-1,T,D]
+        u_time_patch = u_time_patch.view(B * L, T, D).permute(0, 2, 1)       # [B*L,D,T]
+        u_time_patch = self.temporal_conv(u_time_patch).permute(0, 2, 1)     # [B*(L-1),T,D]
+        u_time_patch = u_time_patch.view(B, L, T, D).permute(0, 2, 1, 3).contiguous()      # [B,T,L,D]
+        u_time_patch = u_time_patch.view(B * T, L, D)
+        delta_time_patch = self.temporal_proj(u_time_patch)
+        delta_time = delta_time_patch
 
-        residual = self.alpha * beta_bt * delta_feat                 # [B*T, L, D]
+        delta_feat = 0.5 * (delta_spatial + delta_time)
 
+        # 残差注入回 token 表示。
+        residual = self.alpha * delta_feat
         if transposed:
-            residual = residual.permute(1, 0, 2).contiguous()        # [L, B*T, D]
-
-        return residual, r, beta
+            residual = residual.permute(1, 0, 2).contiguous()
+        return residual

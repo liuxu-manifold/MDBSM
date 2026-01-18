@@ -41,6 +41,11 @@ DATA:
 MODEL:
   # 所使用的模型架构，这里指定为 Vision Transformer Base 16 模型
   ARCH: ViT-B/16
+  REL_WARMUP_EPOCHS: 5
+  REL_TAU_START: 1.0
+  REL_TAU_END: 0.3
+  REL_GAMMA_START: 1.0
+  REL_GAMMA_END: 0.3
 
 # TRAIN 部分：用于配置训练过程相关的参数
 TRAIN:
@@ -50,3 +55,4 @@ TRAIN:
   # 梯度累积的步数，由于显存限制，通过梯度累积可以模拟更大的批次大小
   # 每 4 次前向传播和反向传播后才更新一次模型参数
   ACCUMULATION_STEPS: 4
+  CLIP_GRAD: 1.0

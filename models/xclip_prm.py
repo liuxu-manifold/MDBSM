@@ -1,7 +1,6 @@
 from typing import Tuple, Union
 import torch
 from torch import nn
-import torch.nn.functional as F
 import numpy as np
 from mit_prm import MultiframeIntegrationTransformer
 from prompt import VideoSpecificPrompt
@@ -46,6 +45,7 @@ class XCLIP(CLIP):
         
         self.prompts_generator = VideoSpecificPrompt(layers=prompts_layers, embed_dim=embed_dim, alpha=prompts_alpha,)
         self.use_cache=use_cache
+        # 旧的时序混合器仅为 checkpoint 兼容保留，DyReL 聚合不再使用。
         self.mit = MultiframeIntegrationTransformer(T=T, embed_dim=embed_dim, layers=mit_layers,)
 
         dpr = [x.item() for x in torch.linspace(0, droppath, vision_layers)] if droppath > 0. else None
@@ -80,12 +80,16 @@ class XCLIP(CLIP):
         self.prompts_visual_ln = LayerNorm(vision_width)
         self.prompts_visual_proj = nn.Parameter(torch.randn(vision_width, embed_dim))
         self.tau_q = float(tau_q)
+        self.reliability_warmup = False
         
         self.initialize_parameters()
     
     @torch.jit.ignore
     def no_weight_decay_keywords(self):
         return {'positional_embedding'}
+
+    def set_reliability_warmup(self, enabled: bool = True):
+        self.reliability_warmup = bool(enabled)
 
     def encode_image(self, image):
         return self.visual(image)
@@ -116,12 +120,17 @@ class XCLIP(CLIP):
         
         cls_features = cls_features.view(b, t, -1)
         img_features = img_features.view(b,t,-1,cls_features.shape[-1])
+        # 来自时序模块的逐帧可靠性先验。
         beta = beta.view(b, t) if beta is not None else None
-
         if beta is None:
             q = torch.full((b, t), 1.0 / t, device=cls_features.device, dtype=cls_features.dtype)
         else:
-            q = F.softmax(beta / max(self.tau_q, 1e-6), dim=1)
+            # 基于可靠性的非参数时间证据分布。
+            beta_sum = beta.sum(dim=1, keepdim=True)
+            beta_sum = torch.where(beta_sum > 0, beta_sum, torch.ones_like(beta_sum))
+            q = beta / beta_sum
+        if self.reliability_warmup:
+            q = torch.full((b, t), 1.0 / t, device=cls_features.device, dtype=cls_features.dtype)
 
         return cls_features, img_features, q, beta
 
@@ -135,8 +144,11 @@ class XCLIP(CLIP):
 
     def forward(self, image, text):
         b = image.shape[0]
-        frame_features, img_features, q, beta = self.encode_video(image) 
-        video_features = self.mit(frame_features, weights=q)
+        frame_features, img_features, q, beta = self.encode_video(image)
+        # RC-MIT：轻量级时序交互，不做 beta 重标定。
+        z = self.mit(frame_features, weights=None, return_sequence=True)
+        # 可靠性加权汇聚得到视频级表示。
+        video_features = (q.unsqueeze(-1) * z).sum(dim=1)
         
         img_features = img_features.mean(dim=1, keepdim=False)
 
@@ -197,8 +209,20 @@ def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger
         if key in state_dict:
             del state_dict[key]
 
-    msg = model.load_state_dict(state_dict,strict=False)
+    msg = model.load_state_dict(state_dict, strict=False)
+    missing = getattr(msg, "missing_keys", [])
+    unexpected = getattr(msg, "unexpected_keys", [])
     logger.info(f"load pretrained CLIP: {msg}")
+    logger.info(f"state_dict missing_keys: {len(missing)}")
+    if len(missing) <= 20:
+        logger.info(f"missing_keys list: {missing}")
+    else:
+        logger.info(f"missing_keys sample (20): {missing[:20]}")
+    logger.info(f"state_dict unexpected_keys: {len(unexpected)}")
+    if len(unexpected) <= 20:
+        logger.info(f"unexpected_keys list: {unexpected}")
+    else:
+        logger.info(f"unexpected_keys sample (20): {unexpected[:20]}")
     
     return model.eval()
 
